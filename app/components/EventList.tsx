@@ -13,7 +13,9 @@ export default function EventList({ events }: Props) {
     <FlatList
       data={events}
       inverted
-      keyExtractor={(_, i) => i.toString()}
+      keyExtractor={(item, index) =>
+        `${item.timestamp}-${item.event}-${item.count ?? 0}-${index}`
+      }
       renderItem={({ item }) => {
         let text = item.event;
 

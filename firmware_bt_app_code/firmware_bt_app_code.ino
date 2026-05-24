@@ -3,28 +3,22 @@
 #include "LSM6DS3.h"
 #include <Wire.h>
 
-/* =========================================================
- * DEVICE CONFIG
- * ========================================================= */
+/* DEVICE CONFIG */
 
 #define DEVICE_ID "TABLE_1"
 #define DEVICE_NAME "K2D_TABLE_1"
 
-/* =========================================================
- * BLE
- * ========================================================= */
+/* BLE */
 
 BLEService knockService(
   "12345678-1234-1234-1234-1234567890ab");
 
 BLECharacteristic knockCharacteristic(
   "abcdefab-1234-5678-1234-abcdefabcdef",
-  BLENotify,
+  BLERead | BLENotify,
   20);
 
-/* =========================================================
- * LED
- * ========================================================= */
+/* LED */
 
 #define LED_RED LEDR
 #define LED_GREEN LEDG
@@ -41,13 +35,11 @@ enum LightMode {
 };
 
 void set_light(LightMode mode) {
-
   bool r = LOW;
   bool g = LOW;
   bool b = LOW;
 
   switch (mode) {
-
     case LIGHT_RED:
       r = HIGH;
       break;
@@ -85,15 +77,11 @@ void set_light(LightMode mode) {
   digitalWrite(LED_BLUE, b);
 }
 
-/* =========================================================
- * IMU
- * ========================================================= */
+/* IMU */
 
 LSM6DS3 imu(I2C_MODE, 0x6A);
 
-/* =========================================================
- * CONFIG
- * ========================================================= */
+/* CONFIG */
 
 #define CONFIDENCE_THRESHOLD 0.90f
 
@@ -105,10 +93,9 @@ LSM6DS3 imu(I2C_MODE, 0x6A);
 #define TARGET_KNOCKS 3
 
 #define BATTERY_SEND_INTERVAL_MS 120000
+#define BLE_TX_GAP_MS 12
 
-/* =========================================================
- * STATE
- * ========================================================= */
+/* STATE */
 
 enum Mode {
   MODE_SLEEP,
@@ -121,25 +108,36 @@ unsigned long scan_start_time = 0;
 unsigned long last_knock_time = 0;
 unsigned long last_detection_time = 0;
 unsigned long last_battery_send = 0;
+unsigned long last_ble_send = 0;
 
 int knock_count = 0;
 
-/* =========================================================
- * EI
- * ========================================================= */
+/*  EI */
 
 static float features[EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE];
 static size_t feature_ix = 0;
 
-/* =========================================================
- * BLE SEND
- * ========================================================= */
+/* BLE SEND */
 
-void send_ble(const char *msg) {
-
+void send_ble(const char *payload) {
   if (!BLE.connected()) {
     return;
   }
+
+  unsigned long now = millis();
+
+  if (now - last_ble_send < BLE_TX_GAP_MS) {
+    delay(BLE_TX_GAP_MS - (now - last_ble_send));
+  }
+
+  char msg[20];
+
+  snprintf(
+    msg,
+    sizeof(msg),
+    "%s|%s",
+    DEVICE_ID,
+    payload);
 
   Serial.print("BLE TX -> ");
   Serial.println(msg);
@@ -151,16 +149,14 @@ void send_ble(const char *msg) {
   if (!success) {
     Serial.println("BLE SEND FAILED");
   }
+
+  last_ble_send = millis();
 }
 
-/* =========================================================
- * BATTERY
- * ========================================================= */
+/* BATTERY */
 
 int read_battery_percent() {
-
 #if defined(PIN_VBAT)
-
   int raw = analogRead(PIN_VBAT);
 
   float voltage =
@@ -176,21 +172,15 @@ int read_battery_percent() {
   percent = constrain(percent, 0, 100);
 
   return percent;
-
 #else
-
   return 100;
-
 #endif
 }
 
 void send_battery_status() {
-
   unsigned long now = millis();
 
-  if (
-    now - last_battery_send < BATTERY_SEND_INTERVAL_MS) {
-
+  if (now - last_battery_send < BATTERY_SEND_INTERVAL_MS) {
     return;
   }
 
@@ -198,46 +188,33 @@ void send_battery_status() {
 
   int battery = read_battery_percent();
 
-  char msg[20];
+  char payload[12];
 
   snprintf(
-    msg,
-    sizeof(msg),
-    "%s|BAT:%d",
-    DEVICE_ID,
+    payload,
+    sizeof(payload),
+    "BAT:%d",
     battery);
 
-  send_ble(msg);
+  send_ble(payload);
 }
 
-/* =========================================================
- * MOTION DETECT
- * ========================================================= */
+/* MOTION DETECT*/
 
-bool simple_motion_detect(
-  float x,
-  float y,
-  float z) {
-
+bool simple_motion_detect(float x, float y, float z) {
   static float prev_mag = 0;
 
-  float mag =
-    sqrt(x * x + y * y + z * z);
-
-  float delta =
-    abs(mag - prev_mag);
+  float mag = sqrt(x * x + y * y + z * z);
+  float delta = abs(mag - prev_mag);
 
   prev_mag = mag;
 
-  return (delta > 0.3f);
+  return delta > 0.3f;
 }
 
-/* =========================================================
- * INFERENCE
- * ========================================================= */
+/* INFERENCE*/
 
 bool run_inference_fast() {
-
   signal_t signal;
 
   int err = numpy::signal_from_buffer(
@@ -260,47 +237,26 @@ bool run_inference_fast() {
     return false;
   }
 
-  for (
-    size_t i = 0;
-    i < EI_CLASSIFIER_LABEL_COUNT;
-    i++) {
-
-    if (
-      strcmp(
-        result.classification[i].label,
-        "knock")
-      == 0) {
-
-      return (
-        result.classification[i].value > CONFIDENCE_THRESHOLD);
+  for (size_t i = 0; i < EI_CLASSIFIER_LABEL_COUNT; i++) {
+    if (strcmp(result.classification[i].label, "knock") == 0) {
+      return result.classification[i].value > CONFIDENCE_THRESHOLD;
     }
   }
 
   return false;
 }
 
-/* =========================================================
- * KNOCK HANDLING
- * ========================================================= */
+/* KNOCK HANDLING*/
 
 void handle_knock(bool detected) {
-
   unsigned long now = millis();
 
-  /* ================= NEW KNOCK ================= */
-
-  if (
-    detected && (now - last_detection_time > DEBOUNCE_MS)) {
-
+  if (detected && (now - last_detection_time > DEBOUNCE_MS)) {
     last_detection_time = now;
 
-    if (
-      now - last_knock_time < KNOCK_TIMEOUT_MS) {
-
+    if (now - last_knock_time < KNOCK_TIMEOUT_MS) {
       knock_count++;
-
     } else {
-
       knock_count = 1;
     }
 
@@ -311,14 +267,10 @@ void handle_knock(bool detected) {
     Serial.print("KNOCK COUNT -> ");
     Serial.println(knock_count);
 
-    /* ================= TOO MANY ================= */
-
     if (knock_count > MAX_KNOCKS) {
-
       Serial.println("TOO MANY KNOCKS");
 
       knock_count = 0;
-
       current_mode = MODE_SLEEP;
 
       set_light(LIGHT_RED);
@@ -329,27 +281,22 @@ void handle_knock(bool detected) {
     }
   }
 
-  /* ================= VALID ORDER ================= */
-
   if (
     knock_count >= TARGET_KNOCKS && knock_count <= MAX_KNOCKS && (now - last_knock_time > KNOCK_TIMEOUT_MS)) {
-
-    char msg[20];
+    char payload[12];
 
     snprintf(
-      msg,
-      sizeof(msg),
-      "%s|OK:%d",
-      DEVICE_ID,
+      payload,
+      sizeof(payload),
+      "OK:%d",
       knock_count);
 
     Serial.print("FINAL -> ");
-    Serial.println(msg);
+    Serial.println(payload);
 
-    send_ble(msg);
+    send_ble(payload);
 
     knock_count = 0;
-
     current_mode = MODE_SLEEP;
 
     set_light(LIGHT_GREEN);
@@ -357,15 +304,11 @@ void handle_knock(bool detected) {
     return;
   }
 
-  /* ================= TIMEOUT ================= */
-
   if (
     current_mode == MODE_SCANNING && (now - scan_start_time > SCAN_DURATION_MS)) {
-
     Serial.println("SCAN TIMEOUT");
 
     current_mode = MODE_SLEEP;
-
     knock_count = 0;
 
     send_ble("Q");
@@ -374,83 +317,70 @@ void handle_knock(bool detected) {
   }
 }
 
-/* =========================================================
- * BLE EVENTS
- * ========================================================= */
-
+/* BLE EVENTS*/
 void handle_ble_connection() {
-
   static bool previous_state = false;
 
   bool connected = BLE.connected();
 
-  if (
-    connected && !previous_state) {
-
+  if (connected && !previous_state) {
     Serial.println("BLE CONNECTED");
-
     set_light(LIGHT_WHITE);
+    last_battery_send = 0;
   }
 
-  if (
-    !connected && previous_state) {
-
+  if (!connected && previous_state) {
     Serial.println("BLE DISCONNECTED");
-
     set_light(LIGHT_BLUE);
-
     BLE.advertise();
   }
 
   previous_state = connected;
 }
 
-/* =========================================================
- * SETUP
- * ========================================================= */
+/* SETUP */
 
 void setup() {
-
   Serial.begin(115200);
 
   pinMode(LED_RED, OUTPUT);
   pinMode(LED_GREEN, OUTPUT);
   pinMode(LED_BLUE, OUTPUT);
+
   analogReadResolution(12);
+
   set_light(LIGHT_BLUE);
 
   Wire.begin();
 
   if (imu.begin() != 0) {
-
+    Serial.println("IMU INIT FAILED");
     set_light(LIGHT_RED);
 
-    while (1)
-      ;
+    while (1) {
+      BLE.poll();
+    }
   }
 
   if (!BLE.begin()) {
-
+    Serial.println("BLE INIT FAILED");
     set_light(LIGHT_RED);
 
-    while (1)
-      ;
+    while (1) {
+    }
   }
 
   BLE.setLocalName(DEVICE_NAME);
-
   BLE.setDeviceName(DEVICE_NAME);
-
   BLE.setAdvertisedService(knockService);
 
-  knockService.addCharacteristic(
-    knockCharacteristic);
+  knockService.addCharacteristic(knockCharacteristic);
 
   BLE.addService(knockService);
 
-  BLE.setConnectionInterval(
-    0x0006,
-    0x000C);
+  BLE.setConnectionInterval(0x0006, 0x000C);
+
+  knockCharacteristic.writeValue((const uint8_t *)"BOOT", 4);
 
   BLE.advertise();
 
@@ -460,35 +390,23 @@ void setup() {
   set_light(LIGHT_GREEN);
 }
 
-/* =========================================================
- * LOOP
- * ========================================================= */
-
+/* LOOP */
 void loop() {
-
   BLE.poll();
 
   handle_ble_connection();
-
   send_battery_status();
 
   float x = imu.readFloatGyroX();
   float y = imu.readFloatGyroY();
   float z = imu.readFloatGyroZ();
 
-  /* ================= SLEEP MODE ================= */
-
   if (current_mode == MODE_SLEEP) {
-
-    if (
-      simple_motion_detect(x, y, z)) {
-
+    if (simple_motion_detect(x, y, z)) {
       current_mode = MODE_SCANNING;
 
       scan_start_time = millis();
-
       knock_count = 0;
-
       feature_ix = 0;
 
       send_ble("S");
@@ -501,21 +419,14 @@ void loop() {
     return;
   }
 
-  /* ================= FEATURE BUFFER ================= */
-
   features[feature_ix++] = x;
   features[feature_ix++] = y;
   features[feature_ix++] = z;
 
-  /* ================= RUN EI ================= */
-
-  if (
-    feature_ix >= EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE) {
-
+  if (feature_ix >= EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE) {
     feature_ix = 0;
 
-    bool knock =
-      run_inference_fast();
+    bool knock = run_inference_fast();
 
     handle_knock(knock);
   }

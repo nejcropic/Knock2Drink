@@ -2,7 +2,7 @@ import { Buffer } from "buffer";
 import { PermissionsAndroid, Platform } from "react-native";
 import { BleManager, Device, Subscription } from "react-native-ble-plx";
 
-const DEVICE_NAME = "K2D_";
+const DEVICE_NAME_PREFIX = "K2D_";
 
 const SERVICE_UUID = "12345678-1234-1234-1234-1234567890ab";
 const CHARACTERISTIC_UUID = "abcdefab-1234-5678-1234-abcdefabcdef";
@@ -38,18 +38,15 @@ export async function connectBLE(onMessage: BleMessageCallback) {
 
     console.log("STARTING BLE SCAN");
 
-    onMessage({
-      event: "BLE_SCAN_START",
-    });
+    onMessage({ event: "BLE_SCAN_START" });
 
     manager.startDeviceScan(
       null,
-      {
-        allowDuplicates: false,
-      },
+      { allowDuplicates: false },
       async (error, device) => {
         if (error) {
           console.log("SCAN ERROR", error);
+          isScanning = false;
 
           onMessage({
             event: "ble_error",
@@ -65,7 +62,7 @@ export async function connectBLE(onMessage: BleMessageCallback) {
 
         const name = device.name || device.localName || "";
 
-        if (!name.startsWith(DEVICE_NAME)) {
+        if (!name.startsWith(DEVICE_NAME_PREFIX)) {
           return;
         }
 
@@ -84,6 +81,7 @@ export async function connectBLE(onMessage: BleMessageCallback) {
     );
   } catch (e) {
     console.log("BLE INIT ERROR", e);
+    isScanning = false;
 
     onMessage({
       event: "ble_init_error",
@@ -98,6 +96,7 @@ async function connectToDevice(
   onMessage: BleMessageCallback,
 ) {
   let connectedDevice: Device | null = null;
+  const fallbackDeviceId = getDeviceIdFromName(advertisedName, device.id);
 
   try {
     console.log("CONNECTING TO DEVICE:", advertisedName);
@@ -105,8 +104,6 @@ async function connectToDevice(
     connectedDevice = await device.connect();
 
     connectedDevices.set(device.id, connectedDevice);
-
-    const fallbackDeviceId = getDeviceIdFromName(advertisedName, device.id);
 
     console.log("CONNECTED:", fallbackDeviceId);
 
@@ -139,23 +136,21 @@ async function connectToDevice(
             deviceId: fallbackDeviceId,
             deviceName: advertisedName,
             event: "ble_disconnected",
+            error: e,
           });
         });
-      }, 2000);
+      }, 2500);
     });
 
     if (Platform.OS === "android") {
       try {
         await connectedDevice.requestMTU(128);
-        console.log("MTU REQUESTED:", fallbackDeviceId);
       } catch (e) {
         console.log("MTU ERROR:", fallbackDeviceId, e);
       }
     }
 
     await connectedDevice.discoverAllServicesAndCharacteristics();
-
-    console.log("DISCOVERED SERVICES:", fallbackDeviceId);
 
     monitorSubscriptions.get(device.id)?.remove();
 
@@ -188,7 +183,7 @@ async function connectToDevice(
           console.log("BLE MESSAGE:", decoded);
 
           handleBlePayload(
-            decoded,
+            decoded.trim(),
             fallbackDeviceId,
             advertisedName,
             onMessage,
@@ -207,7 +202,7 @@ async function connectToDevice(
     connectingDevices.delete(device.id);
 
     onMessage({
-      deviceId: getDeviceIdFromName(advertisedName, device.id),
+      deviceId: fallbackDeviceId,
       deviceName: advertisedName,
       event: "ble_connect_error",
       error: e,
@@ -225,16 +220,15 @@ function handleBlePayload(
   deviceName: string,
   onMessage: BleMessageCallback,
 ) {
-  let deviceId = deviceName;
+  let deviceId = fallbackDeviceId;
   let payload = decoded;
 
   const parts = decoded.split("|");
 
   if (parts.length === 2) {
+    deviceId = parts[0] || fallbackDeviceId;
     payload = parts[1];
   }
-
-  /* ================= SCANNING START ================= */
 
   if (payload === "S") {
     onMessage({
@@ -242,11 +236,8 @@ function handleBlePayload(
       deviceName,
       event: "SCANNING_START",
     });
-
     return;
   }
-
-  /* ================= SCANNING STOP ================= */
 
   if (payload === "Q") {
     onMessage({
@@ -254,10 +245,8 @@ function handleBlePayload(
       deviceName,
       event: "SCANNING_STOP",
     });
-
     return;
   }
-  /* ================= BATTERY ================= */
 
   if (payload.startsWith("BAT:")) {
     const battery = Number(payload.split(":")[1]);
@@ -272,11 +261,8 @@ function handleBlePayload(
       event: "BATTERY",
       battery,
     });
-
     return;
   }
-
-  /* ================= ORDER OK ================= */
 
   if (payload.startsWith("OK:")) {
     const count = Number(payload.split(":")[1]);
@@ -291,11 +277,8 @@ function handleBlePayload(
       event: "KNOCK_PATTERN_OK",
       count,
     });
-
     return;
   }
-
-  /* ================= TOO MANY KNOCKS ================= */
 
   if (payload === "ERR") {
     onMessage({
@@ -303,15 +286,15 @@ function handleBlePayload(
       deviceName,
       event: "TOO_MANY_KNOCKS",
     });
-
     return;
   }
 
   console.log("UNKNOWN BLE MESSAGE:", decoded);
 }
+
 function getDeviceIdFromName(name: string, fallback: string) {
-  if (name.startsWith(`${DEVICE_NAME}_`)) {
-    return name.replace(`${DEVICE_NAME}_`, "");
+  if (name.startsWith(DEVICE_NAME_PREFIX)) {
+    return name.replace(DEVICE_NAME_PREFIX, "");
   }
 
   return fallback;

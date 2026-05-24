@@ -1,4 +1,4 @@
-import { StyleSheet, Text, View } from "react-native";
+import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { useOrders } from "../../context/OrdersContext";
 import { COLORS } from "../../theme/colors";
 
@@ -19,11 +19,9 @@ export default function StatsScreen() {
       : history.reduce((sum, order) => sum + order.knocks, 0) / history.length;
 
   const itemCounts: Record<string, number> = {};
-  const deviceCounts: Record<string, number> = {};
+
   history.forEach((order) => {
     itemCounts[order.item] = (itemCounts[order.item] || 0) + 1;
-
-    deviceCounts[order.deviceId] = (deviceCounts[order.deviceId] || 0) + 1;
   });
 
   const topItem =
@@ -31,8 +29,14 @@ export default function StatsScreen() {
 
   const topEntries = Object.entries(itemCounts).sort((a, b) => b[1] - a[1]);
 
+  const maxCount = Math.max(...topEntries.map(([, count]) => count), 1);
+
   return (
-    <View style={styles.container}>
+    <ScrollView
+      style={styles.container}
+      contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={false}
+    >
       <Text style={styles.title}>Statistics</Text>
       <Text style={styles.subtitle}>Order analytics</Text>
 
@@ -67,22 +71,26 @@ export default function StatsScreen() {
           topEntries.map(([item, count]) => (
             <View key={item} style={styles.rankRow}>
               <Text style={styles.rankItem}>{item}</Text>
+
               <View style={styles.rankRight}>
-                <View
-                  style={[
-                    styles.rankBar,
-                    {
-                      width: Math.max(40, count * 30),
-                    },
-                  ]}
-                />
+                <View style={styles.rankBarTrack}>
+                  <View
+                    style={[
+                      styles.rankBar,
+                      {
+                        width: `${Math.max(12, (count / maxCount) * 100)}%`,
+                      },
+                    ]}
+                  />
+                </View>
+
                 <Text style={styles.rankCount}>{count}</Text>
               </View>
             </View>
           ))
         )}
       </View>
-    </View>
+    </ScrollView>
   );
 }
 
@@ -90,8 +98,12 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.bg,
+  },
+
+  content: {
     paddingHorizontal: 20,
     paddingTop: 76,
+    paddingBottom: 120,
   },
 
   title: {
@@ -177,15 +189,25 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
 
-  rankBar: {
+  rankBarTrack: {
+    flex: 1,
     height: 10,
     borderRadius: 999,
-    backgroundColor: COLORS.green,
+    backgroundColor: "#252525",
+    overflow: "hidden",
     marginRight: 10,
+  },
+
+  rankBar: {
+    height: "100%",
+    borderRadius: 999,
+    backgroundColor: COLORS.green,
   },
 
   rankCount: {
     color: COLORS.subtext,
     fontWeight: "700",
+    minWidth: 24,
+    textAlign: "right",
   },
 });
