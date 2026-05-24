@@ -20,6 +20,8 @@ type DeviceState = {
   connected: boolean;
   knocks: number;
   status: string;
+  name: string;
+  battery: number;
 };
 
 export default function HomeScreen() {
@@ -39,10 +41,25 @@ export default function HomeScreen() {
 
       switch (msg.event) {
         case "ble_connected":
-          updateDevice(msg.deviceId, {
-            connected: true,
-            status: "CONNECTED",
-          });
+          updateDevice(
+            msg.deviceId,
+            {
+              connected: true,
+              status: "CONNECTED",
+            },
+            msg.deviceName,
+          );
+          break;
+
+        case "ble_reconnecting":
+          updateDevice(
+            msg.deviceId,
+            {
+              connected: false,
+              status: "RECONNECTING",
+            },
+            msg.deviceName,
+          );
 
           break;
 
@@ -62,10 +79,16 @@ export default function HomeScreen() {
           break;
 
         case "SCANNING_STOP":
-          updateDevice(msg.deviceId, {
-            status: "IDLE",
-            knocks: 0,
-          });
+          updateDevice(
+            msg.deviceId,
+            {
+              status: "TIMEOUT",
+              knocks: 0,
+            },
+            msg.deviceName,
+          );
+
+          resetDeviceLater(msg.deviceId);
 
           break;
 
@@ -79,19 +102,39 @@ export default function HomeScreen() {
           break;
 
         case "KNOCK_PATTERN_OK":
-          updateDevice(msg.deviceId, {
-            status: "ORDER READY",
-            knocks: msg.count,
-          });
+          updateDevice(
+            msg.deviceId,
+            {
+              status: "ORDER READY",
+              knocks: msg.count,
+            },
+            msg.deviceName,
+          );
 
           onKnockDetected(msg.deviceId, msg.count);
 
           break;
         case "TOO_MANY_KNOCKS":
-          updateDevice(msg.deviceId, {
-            status: "TOO MANY KNOCKS",
-            knocks: 0,
-          });
+          updateDevice(
+            msg.deviceId,
+            {
+              status: "TOO MANY KNOCKS",
+              knocks: 0,
+            },
+            msg.deviceName,
+          );
+
+          resetDeviceLater(msg.deviceId);
+
+          break;
+        case "BATTERY":
+          updateDevice(
+            msg.deviceId,
+            {
+              battery: msg.battery,
+            },
+            msg.deviceName,
+          );
 
           break;
       }
@@ -102,7 +145,11 @@ export default function HomeScreen() {
     };
   }, []);
 
-  function updateDevice(deviceId: string, updates: Partial<DeviceState>) {
+  function updateDevice(
+    deviceId: string,
+    updates: Partial<DeviceState>,
+    deviceName?: string,
+  ) {
     setDevices((prev) => ({
       ...prev,
 
@@ -113,16 +160,25 @@ export default function HomeScreen() {
 
         status: prev[deviceId]?.status || "IDLE",
 
+        battery: prev[deviceId]?.battery || 0,
+
+        name: deviceName || prev[deviceId]?.name || deviceId,
+
         ...updates,
       },
     }));
   }
 
-  async function onKnockDetected(deviceId: string, knocks: number) {
-    if (knocks < 3) {
-      return;
-    }
+  function resetDeviceLater(deviceId: string) {
+    setTimeout(() => {
+      updateDevice(deviceId, {
+        status: "IDLE",
+        knocks: 0,
+      });
+    }, 2500);
+  }
 
+  async function onKnockDetected(deviceId: string, knocks: number) {
     setCurrentKnocks(knocks);
 
     setCurrentDeviceId(deviceId);
@@ -234,7 +290,7 @@ export default function HomeScreen() {
                     </View>
 
                     <View>
-                      <Text style={styles.deviceName}>{id}</Text>
+                      <Text style={styles.deviceName}>{device.name}</Text>
 
                       <Text style={styles.deviceMode}>{device.status}</Text>
                     </View>
@@ -251,7 +307,6 @@ export default function HomeScreen() {
                     ]}
                   />
                 </View>
-
                 <View style={styles.knockRow}>
                   <Ionicons
                     name="radio-button-on"
@@ -263,7 +318,15 @@ export default function HomeScreen() {
                     {device.knocks} knocks
                   </Text>
                 </View>
+                <View style={styles.batteryRow}>
+                  <Ionicons
+                    name="battery-half"
+                    size={16}
+                    color={COLORS.subtext}
+                  />
 
+                  <Text style={styles.batteryText}>{device.battery}%</Text>
+                </View>
                 {!!mappings[device.knocks] && (
                   <View style={styles.orderBadgeGlow}>
                     <View style={styles.orderBadge}>
@@ -299,7 +362,16 @@ export default function HomeScreen() {
             <View style={styles.popupButtons}>
               <Pressable
                 style={[styles.popupButton, styles.rejectButton]}
-                onPress={() => setPopupVisible(false)}
+                onPress={() => {
+                  updateDevice(currentDeviceId, {
+                    status: "ORDER REJECTED",
+                    knocks: 0,
+                  });
+
+                  setPopupVisible(false);
+
+                  resetDeviceLater(currentDeviceId);
+                }}
               >
                 <Text style={styles.popupButtonText}>Reject</Text>
               </Pressable>
@@ -309,7 +381,14 @@ export default function HomeScreen() {
                 onPress={() => {
                   addOrder(currentDeviceId, currentKnocks);
 
+                  updateDevice(currentDeviceId, {
+                    status: "ORDER ACCEPTED",
+                    knocks: 0,
+                  });
+
                   setPopupVisible(false);
+
+                  resetDeviceLater(currentDeviceId);
                 }}
               >
                 <Text style={styles.popupButtonText}>Accept</Text>
@@ -648,5 +727,17 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     fontWeight: "800",
     fontSize: 16,
+  },
+  batteryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 10,
+  },
+
+  batteryText: {
+    color: COLORS.subtext,
+    marginLeft: 6,
+    fontSize: 13,
+    fontWeight: "700",
   },
 });

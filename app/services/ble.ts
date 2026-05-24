@@ -2,7 +2,7 @@ import { Buffer } from "buffer";
 import { PermissionsAndroid, Platform } from "react-native";
 import { BleManager, Device, Subscription } from "react-native-ble-plx";
 
-const DEVICE_NAME = "Knock2Drink";
+const DEVICE_NAME = "K2D_";
 
 const SERVICE_UUID = "12345678-1234-1234-1234-1234567890ab";
 const CHARACTERISTIC_UUID = "abcdefab-1234-5678-1234-abcdefabcdef";
@@ -128,8 +128,20 @@ async function connectToDevice(
       onMessage({
         deviceId: fallbackDeviceId,
         deviceName: advertisedName,
-        event: "ble_disconnected",
+        event: "ble_reconnecting",
       });
+
+      setTimeout(() => {
+        connectToDevice(device, advertisedName, onMessage).catch((e) => {
+          console.log("RECONNECT FAILED", e);
+
+          onMessage({
+            deviceId: fallbackDeviceId,
+            deviceName: advertisedName,
+            event: "ble_disconnected",
+          });
+        });
+      }, 2000);
     });
 
     if (Platform.OS === "android") {
@@ -213,13 +225,12 @@ function handleBlePayload(
   deviceName: string,
   onMessage: BleMessageCallback,
 ) {
-  let deviceId = fallbackDeviceId;
+  let deviceId = deviceName;
   let payload = decoded;
 
   const parts = decoded.split("|");
 
   if (parts.length === 2) {
-    deviceId = parts[0];
     payload = parts[1];
   }
 
@@ -242,6 +253,24 @@ function handleBlePayload(
       deviceId,
       deviceName,
       event: "SCANNING_STOP",
+    });
+
+    return;
+  }
+  /* ================= BATTERY ================= */
+
+  if (payload.startsWith("BAT:")) {
+    const battery = Number(payload.split(":")[1]);
+
+    if (Number.isNaN(battery)) {
+      return;
+    }
+
+    onMessage({
+      deviceId,
+      deviceName,
+      event: "BATTERY",
+      battery,
     });
 
     return;
