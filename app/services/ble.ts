@@ -223,7 +223,9 @@ function handleBlePayload(
     payload = parts[1];
   }
 
-  if (payload === "SCAN_START") {
+  /* ================= SCANNING START ================= */
+
+  if (payload === "S") {
     onMessage({
       deviceId,
       deviceName,
@@ -233,7 +235,9 @@ function handleBlePayload(
     return;
   }
 
-  if (payload === "SCAN_STOP") {
+  /* ================= SCANNING STOP ================= */
+
+  if (payload === "Q") {
     onMessage({
       deviceId,
       deviceName,
@@ -243,30 +247,9 @@ function handleBlePayload(
     return;
   }
 
-  if (payload === "PATTERN_OK") {
-    onMessage({
-      deviceId,
-      deviceName,
-      event: "KNOCK_PATTERN_OK",
-    });
+  /* ================= ORDER OK ================= */
 
-    return;
-  }
-
-  if (payload.startsWith("PATTERN_OK:")) {
-    const count = Number(payload.split(":")[1]);
-
-    onMessage({
-      deviceId,
-      deviceName,
-      event: "KNOCK_PATTERN_OK",
-      count,
-    });
-
-    return;
-  }
-
-  if (payload.startsWith("K:")) {
+  if (payload.startsWith("OK:")) {
     const count = Number(payload.split(":")[1]);
 
     if (Number.isNaN(count)) {
@@ -276,8 +259,20 @@ function handleBlePayload(
     onMessage({
       deviceId,
       deviceName,
-      event: "knock",
+      event: "KNOCK_PATTERN_OK",
       count,
+    });
+
+    return;
+  }
+
+  /* ================= TOO MANY KNOCKS ================= */
+
+  if (payload === "ERR") {
+    onMessage({
+      deviceId,
+      deviceName,
+      event: "TOO_MANY_KNOCKS",
     });
 
     return;
@@ -285,7 +280,6 @@ function handleBlePayload(
 
   console.log("UNKNOWN BLE MESSAGE:", decoded);
 }
-
 function getDeviceIdFromName(name: string, fallback: string) {
   if (name.startsWith(`${DEVICE_NAME}_`)) {
     return name.replace(`${DEVICE_NAME}_`, "");

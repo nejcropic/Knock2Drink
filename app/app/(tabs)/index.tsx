@@ -80,10 +80,18 @@ export default function HomeScreen() {
 
         case "KNOCK_PATTERN_OK":
           updateDevice(msg.deviceId, {
-            status: "ORDER SENT",
+            status: "ORDER READY",
+            knocks: msg.count,
           });
 
-          addOrder(msg.deviceId, msg.count);
+          onKnockDetected(msg.deviceId, msg.count);
+
+          break;
+        case "TOO_MANY_KNOCKS":
+          updateDevice(msg.deviceId, {
+            status: "TOO MANY KNOCKS",
+            knocks: 0,
+          });
 
           break;
       }

@@ -1,9 +1,6 @@
 #include <ArduinoBLE.h>
-
 #include <Knock_me_out_inferencing.h>
-
 #include "LSM6DS3.h"
-
 #include <Wire.h>
 
 /* ================= BLE ================= */
