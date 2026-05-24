@@ -4,6 +4,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 
 export type OrderItem = {
   id: string;
+  deviceId: string;
   knocks: number;
   item: string;
   timestamp: number;
@@ -17,8 +18,7 @@ type OrdersContextType = {
   history: OrderItem[];
 
   mappings: MappingType;
-
-  addOrder: (knocks: number) => void;
+  addOrder: (deviceId: string, knocks: number) => void;
 
   setMapping: (knocks: number, item: string) => void;
 };
@@ -70,16 +70,16 @@ export function OrdersProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.setItem(MAPPINGS_KEY, JSON.stringify(mappings));
   }, [mappings]);
 
-  function addOrder(knocks: number) {
+  function addOrder(deviceId: string, knocks: number) {
     const item = mappings[knocks] || "Unknown";
 
     const newOrder: OrderItem = {
       id: Date.now().toString(),
+      deviceId,
       knocks,
       item,
       timestamp: Date.now(),
     };
-
     setHistory((prev) => [newOrder, ...prev]);
   }
 

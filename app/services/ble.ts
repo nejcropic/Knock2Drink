@@ -5,28 +5,24 @@ import { BleManager, Device, Subscription } from "react-native-ble-plx";
 const DEVICE_NAME = "Knock2Drink";
 
 const SERVICE_UUID = "12345678-1234-1234-1234-1234567890ab";
-
 const CHARACTERISTIC_UUID = "abcdefab-1234-5678-1234-abcdefabcdef";
 
 let manager: BleManager | null = null;
 
-let connectedDevice: Device | null = null;
+const connectedDevices = new Map<string, Device>();
+const monitorSubscriptions = new Map<string, Subscription>();
+const connectingDevices = new Set<string>();
 
-let monitorSubscription: Subscription | null = null;
+let isScanning = false;
 
-let isConnecting = false;
+type BleMessageCallback = (msg: any) => void;
 
-export async function connectBLE(onMessage: (msg: any) => void) {
+export async function connectBLE(onMessage: BleMessageCallback) {
   try {
     const granted = await requestBluetoothPermissions();
 
     if (!granted) {
-      console.log("BLE permissions denied");
-
-      onMessage({
-        event: "ble_permission_denied",
-      });
-
+      onMessage({ event: "ble_permission_denied" });
       return;
     }
 
@@ -34,10 +30,16 @@ export async function connectBLE(onMessage: (msg: any) => void) {
       manager = new BleManager();
     }
 
+    if (isScanning) {
+      return;
+    }
+
+    isScanning = true;
+
     console.log("STARTING BLE SCAN");
 
     onMessage({
-      event: "SCANNING_START",
+      event: "BLE_SCAN_START",
     });
 
     manager.startDeviceScan(
@@ -61,142 +63,23 @@ export async function connectBLE(onMessage: (msg: any) => void) {
           return;
         }
 
-        const name = device.name || device.localName;
+        const name = device.name || device.localName || "";
 
-        console.log("FOUND DEVICE:", name);
-
-        if (name !== DEVICE_NAME) {
+        if (!name.startsWith(DEVICE_NAME)) {
           return;
         }
 
-        if (isConnecting || connectedDevice) {
+        if (connectedDevices.has(device.id)) {
           return;
         }
 
-        isConnecting = true;
-
-        console.log("CONNECTING TO DEVICE");
-
-        manager?.stopDeviceScan();
-
-        onMessage({
-          event: "SCANNING_STOP",
-        });
-
-        try {
-          connectedDevice = await device.connect();
-
-          console.log("CONNECTED");
-
-          connectedDevice.onDisconnected((error) => {
-            console.log("DEVICE DISCONNECTED", error);
-
-            monitorSubscription?.remove();
-            monitorSubscription = null;
-
-            connectedDevice = null;
-
-            isConnecting = false;
-
-            onMessage({
-              event: "ble_disconnected",
-            });
-          });
-
-          // Small delay helps some BLE devices
-          await new Promise((resolve) => setTimeout(resolve, 500));
-
-          // Android only
-          if (Platform.OS === "android") {
-            try {
-              await connectedDevice.requestMTU(128);
-
-              console.log("MTU REQUESTED");
-            } catch (e) {
-              console.log("MTU ERROR", e);
-            }
-          }
-
-          await connectedDevice.discoverAllServicesAndCharacteristics();
-
-          console.log("DISCOVERED SERVICES");
-
-          monitorSubscription?.remove();
-
-          monitorSubscription = connectedDevice.monitorCharacteristicForService(
-            SERVICE_UUID,
-            CHARACTERISTIC_UUID,
-            (error, characteristic) => {
-              if (error) {
-                console.log("MONITOR ERROR", error);
-
-                onMessage({
-                  event: "ble_monitor_error",
-                  error,
-                });
-
-                return;
-              }
-
-              if (!characteristic?.value) {
-                return;
-              }
-
-              try {
-                const decoded = Buffer.from(
-                  characteristic.value,
-                  "base64",
-                ).toString("utf-8");
-
-                console.log("BLE MESSAGE:", decoded);
-
-                // Example:
-                // KNOCK:3
-                if (decoded.startsWith("KNOCK:")) {
-                  const count = Number(decoded.split(":")[1]);
-
-                  onMessage({
-                    event: "knock",
-                    count,
-                  });
-
-                  return;
-                }
-
-                // Generic events:
-                // SCANNING_START
-                // SCANNING_STOP
-                // KNOCK_PATTERN_OK
-                onMessage({
-                  event: decoded,
-                });
-              } catch (e) {
-                console.log("DECODE ERROR", e);
-              }
-            },
-          );
-
-          onMessage({
-            event: "ble_connected",
-          });
-
-          isConnecting = false;
-        } catch (e) {
-          console.log("BLE CONNECT ERROR", e);
-
-          onMessage({
-            event: "ble_connect_error",
-            error: e,
-          });
-
-          try {
-            await connectedDevice?.cancelConnection();
-          } catch {}
-
-          connectedDevice = null;
-
-          isConnecting = false;
+        if (connectingDevices.has(device.id)) {
+          return;
         }
+
+        connectingDevices.add(device.id);
+
+        await connectToDevice(device, name, onMessage);
       },
     );
   } catch (e) {
@@ -209,25 +92,232 @@ export async function connectBLE(onMessage: (msg: any) => void) {
   }
 }
 
+async function connectToDevice(
+  device: Device,
+  advertisedName: string,
+  onMessage: BleMessageCallback,
+) {
+  let connectedDevice: Device | null = null;
+
+  try {
+    console.log("CONNECTING TO DEVICE:", advertisedName);
+
+    connectedDevice = await device.connect();
+
+    connectedDevices.set(device.id, connectedDevice);
+
+    const fallbackDeviceId = getDeviceIdFromName(advertisedName, device.id);
+
+    console.log("CONNECTED:", fallbackDeviceId);
+
+    onMessage({
+      deviceId: fallbackDeviceId,
+      deviceName: advertisedName,
+      event: "ble_connected",
+    });
+
+    connectedDevice.onDisconnected((error) => {
+      console.log("DEVICE DISCONNECTED:", fallbackDeviceId, error);
+
+      connectedDevices.delete(device.id);
+      connectingDevices.delete(device.id);
+
+      monitorSubscriptions.get(device.id)?.remove();
+      monitorSubscriptions.delete(device.id);
+
+      onMessage({
+        deviceId: fallbackDeviceId,
+        deviceName: advertisedName,
+        event: "ble_disconnected",
+      });
+    });
+
+    if (Platform.OS === "android") {
+      try {
+        await connectedDevice.requestMTU(128);
+        console.log("MTU REQUESTED:", fallbackDeviceId);
+      } catch (e) {
+        console.log("MTU ERROR:", fallbackDeviceId, e);
+      }
+    }
+
+    await connectedDevice.discoverAllServicesAndCharacteristics();
+
+    console.log("DISCOVERED SERVICES:", fallbackDeviceId);
+
+    monitorSubscriptions.get(device.id)?.remove();
+
+    const subscription = connectedDevice.monitorCharacteristicForService(
+      SERVICE_UUID,
+      CHARACTERISTIC_UUID,
+      (error, characteristic) => {
+        if (error) {
+          console.log("MONITOR ERROR:", fallbackDeviceId, error);
+
+          onMessage({
+            deviceId: fallbackDeviceId,
+            deviceName: advertisedName,
+            event: "ble_monitor_error",
+            error,
+          });
+
+          return;
+        }
+
+        if (!characteristic?.value) {
+          return;
+        }
+
+        try {
+          const decoded = Buffer.from(characteristic.value, "base64").toString(
+            "utf-8",
+          );
+
+          console.log("BLE MESSAGE:", decoded);
+
+          handleBlePayload(
+            decoded,
+            fallbackDeviceId,
+            advertisedName,
+            onMessage,
+          );
+        } catch (e) {
+          console.log("DECODE ERROR:", fallbackDeviceId, e);
+        }
+      },
+    );
+
+    monitorSubscriptions.set(device.id, subscription);
+  } catch (e) {
+    console.log("BLE CONNECT ERROR:", advertisedName, e);
+
+    connectedDevices.delete(device.id);
+    connectingDevices.delete(device.id);
+
+    onMessage({
+      deviceId: getDeviceIdFromName(advertisedName, device.id),
+      deviceName: advertisedName,
+      event: "ble_connect_error",
+      error: e,
+    });
+
+    try {
+      await connectedDevice?.cancelConnection();
+    } catch {}
+  }
+}
+
+function handleBlePayload(
+  decoded: string,
+  fallbackDeviceId: string,
+  deviceName: string,
+  onMessage: BleMessageCallback,
+) {
+  let deviceId = fallbackDeviceId;
+  let payload = decoded;
+
+  const parts = decoded.split("|");
+
+  if (parts.length === 2) {
+    deviceId = parts[0];
+    payload = parts[1];
+  }
+
+  if (payload === "SCAN_START") {
+    onMessage({
+      deviceId,
+      deviceName,
+      event: "SCANNING_START",
+    });
+
+    return;
+  }
+
+  if (payload === "SCAN_STOP") {
+    onMessage({
+      deviceId,
+      deviceName,
+      event: "SCANNING_STOP",
+    });
+
+    return;
+  }
+
+  if (payload === "PATTERN_OK") {
+    onMessage({
+      deviceId,
+      deviceName,
+      event: "KNOCK_PATTERN_OK",
+    });
+
+    return;
+  }
+
+  if (payload.startsWith("PATTERN_OK:")) {
+    const count = Number(payload.split(":")[1]);
+
+    onMessage({
+      deviceId,
+      deviceName,
+      event: "KNOCK_PATTERN_OK",
+      count,
+    });
+
+    return;
+  }
+
+  if (payload.startsWith("K:")) {
+    const count = Number(payload.split(":")[1]);
+
+    if (Number.isNaN(count)) {
+      return;
+    }
+
+    onMessage({
+      deviceId,
+      deviceName,
+      event: "knock",
+      count,
+    });
+
+    return;
+  }
+
+  console.log("UNKNOWN BLE MESSAGE:", decoded);
+}
+
+function getDeviceIdFromName(name: string, fallback: string) {
+  if (name.startsWith(`${DEVICE_NAME}_`)) {
+    return name.replace(`${DEVICE_NAME}_`, "");
+  }
+
+  return fallback;
+}
+
 export async function disconnectBLE() {
   try {
     console.log("DISCONNECTING BLE");
 
     manager?.stopDeviceScan();
+    isScanning = false;
 
-    monitorSubscription?.remove();
-    monitorSubscription = null;
+    monitorSubscriptions.forEach((subscription) => {
+      subscription.remove();
+    });
 
-    if (connectedDevice) {
-      await connectedDevice.cancelConnection();
-    }
+    monitorSubscriptions.clear();
 
-    connectedDevice = null;
+    const disconnects = Array.from(connectedDevices.values()).map((device) =>
+      device.cancelConnection().catch(() => {}),
+    );
+
+    await Promise.all(disconnects);
+
+    connectedDevices.clear();
+    connectingDevices.clear();
 
     manager?.destroy();
     manager = null;
-
-    isConnecting = false;
 
     console.log("BLE DISCONNECTED");
   } catch (e) {
@@ -240,7 +330,6 @@ async function requestBluetoothPermissions() {
     return true;
   }
 
-  // Android < 12
   if (Platform.Version < 31) {
     const granted = await PermissionsAndroid.request(
       PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
@@ -249,7 +338,6 @@ async function requestBluetoothPermissions() {
     return granted === PermissionsAndroid.RESULTS.GRANTED;
   }
 
-  // Android 12+
   const results = await PermissionsAndroid.requestMultiple([
     PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
     PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT,

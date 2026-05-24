@@ -19,9 +19,11 @@ export default function StatsScreen() {
       : history.reduce((sum, order) => sum + order.knocks, 0) / history.length;
 
   const itemCounts: Record<string, number> = {};
-
+  const deviceCounts: Record<string, number> = {};
   history.forEach((order) => {
     itemCounts[order.item] = (itemCounts[order.item] || 0) + 1;
+
+    deviceCounts[order.deviceId] = (deviceCounts[order.deviceId] || 0) + 1;
   });
 
   const topItem =

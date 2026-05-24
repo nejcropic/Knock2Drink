@@ -1,84 +1,37 @@
+import Ionicons from "@expo/vector-icons/Ionicons";
+import { useEffect, useState } from "react";
+
 import {
-  Animated,
-  Easing,
   Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
 } from "react-native";
 
-import * as Haptics from "expo-haptics";
-import { LinearGradient } from "expo-linear-gradient";
-import { useEffect, useRef, useState } from "react";
-
 import { connectBLE, disconnectBLE } from "../../services/ble";
 
 import { useOrders } from "../../context/OrdersContext";
+
 import { COLORS } from "../../theme/colors";
 
-export default function LiveScreen() {
+type DeviceState = {
+  connected: boolean;
+  knocks: number;
+  status: string;
+};
+
+export default function HomeScreen() {
+  const { addOrder, mappings } = useOrders();
+
+  const [devices, setDevices] = useState<Record<string, DeviceState>>({});
+
   const [popupVisible, setPopupVisible] = useState(false);
+
   const [currentKnocks, setCurrentKnocks] = useState(0);
-  const [connected, setConnected] = useState(false);
 
-  const popupVisibleRef = useRef(false);
-
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const pulseAnim = useRef(new Animated.Value(1)).current;
-
-  const { addOrder, mappings, history } = useOrders();
-
-  async function onKnockDetected(knocks: number) {
-    if (knocks < 3) return;
-
-    if (popupVisibleRef.current) return;
-
-    popupVisibleRef.current = true;
-
-    setCurrentKnocks(knocks);
-
-    setPopupVisible(true);
-
-    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-    timeoutRef.current = setTimeout(() => {
-      closePopup();
-    }, 10000);
-  }
-
-  function closePopup() {
-    popupVisibleRef.current = false;
-
-    setPopupVisible(false);
-
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-
-      timeoutRef.current = null;
-    }
-  }
-
-  useEffect(() => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 1.15,
-          duration: 900,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
-
-        Animated.timing(pulseAnim, {
-          toValue: 1,
-          duration: 900,
-          easing: Easing.inOut(Easing.ease),
-          useNativeDriver: true,
-        }),
-      ]),
-    ).start();
-  }, []);
+  const [currentDeviceId, setCurrentDeviceId] = useState("");
 
   useEffect(() => {
     connectBLE((msg) => {
@@ -86,52 +39,51 @@ export default function LiveScreen() {
 
       switch (msg.event) {
         case "ble_connected":
-          console.log("BLE connected");
-
-          setConnected(true);
+          updateDevice(msg.deviceId, {
+            connected: true,
+            status: "CONNECTED",
+          });
 
           break;
 
         case "ble_disconnected":
-          console.log("BLE disconnected");
-
-          setConnected(false);
-
-          break;
-
-        case "ble_connect_error":
-          console.log("BLE connect error");
-
-          setConnected(false);
+          updateDevice(msg.deviceId, {
+            connected: false,
+            status: "DISCONNECTED",
+          });
 
           break;
 
         case "SCANNING_START":
-          console.log("Scanning started");
+          updateDevice(msg.deviceId, {
+            status: "SCANNING",
+          });
 
           break;
 
         case "SCANNING_STOP":
-          console.log("Scanning stopped");
-
-          break;
-
-        case "KNOCK_PATTERN_OK":
-          console.log("Pattern OK");
+          updateDevice(msg.deviceId, {
+            status: "IDLE",
+            knocks: 0,
+          });
 
           break;
 
         case "knock":
-          if (typeof msg.count === "number") {
-            console.log("Knock detected:", msg.count);
+          updateDevice(msg.deviceId, {
+            knocks: msg.count,
+          });
 
-            onKnockDetected(msg.count);
-          }
+          onKnockDetected(msg.deviceId, msg.count);
 
           break;
 
-        default:
-          console.log("UNKNOWN BLE EVENT:", msg.event);
+        case "KNOCK_PATTERN_OK":
+          updateDevice(msg.deviceId, {
+            status: "ORDER SENT",
+          });
+
+          addOrder(msg.deviceId, msg.count);
 
           break;
       }
@@ -139,102 +91,220 @@ export default function LiveScreen() {
 
     return () => {
       disconnectBLE();
-
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
     };
   }, []);
+
+  function updateDevice(deviceId: string, updates: Partial<DeviceState>) {
+    setDevices((prev) => ({
+      ...prev,
+
+      [deviceId]: {
+        connected: prev[deviceId]?.connected || false,
+
+        knocks: prev[deviceId]?.knocks || 0,
+
+        status: prev[deviceId]?.status || "IDLE",
+
+        ...updates,
+      },
+    }));
+  }
+
+  async function onKnockDetected(deviceId: string, knocks: number) {
+    if (knocks < 3) {
+      return;
+    }
+
+    setCurrentKnocks(knocks);
+
+    setCurrentDeviceId(deviceId);
+
+    setPopupVisible(true);
+  }
+
+  const connectedCount = Object.values(devices).filter(
+    (d) => d.connected,
+  ).length;
+
+  const activeCount = Object.values(devices).filter(
+    (d) => d.status === "SCANNING",
+  ).length;
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.logo}>
-          Knock<Text style={styles.logoGreen}>2Drink</Text>
-        </Text>
+        <View>
+          <Text style={styles.headerTitle}>Knock2Drink</Text>
+
+          <Text style={styles.headerSubtitle}>Smart knock ordering</Text>
+        </View>
 
         <View style={styles.liveBadge}>
           <View
             style={[
               styles.liveDot,
               {
-                backgroundColor: connected ? COLORS.green : COLORS.red,
+                backgroundColor: connectedCount > 0 ? COLORS.green : COLORS.red,
               },
             ]}
           />
 
-          <Text style={styles.liveText}>{connected ? "Live" : "Offline"}</Text>
+          <Text style={styles.liveText}>
+            {connectedCount > 0 ? `${connectedCount} Live` : "Offline"}
+          </Text>
         </View>
       </View>
 
-      <LinearGradient colors={["#1b1b1b", "#101010"]} style={styles.mainCard}>
-        <Animated.View
-          style={{
-            transform: [{ scale: pulseAnim }],
-          }}
-        >
-          <View style={styles.iconCircle}>
-            <Text style={styles.bell}>🔔</Text>
-          </View>
-        </Animated.View>
+      <View style={styles.heroCard}>
+        <View style={styles.heroTop}>
+          <View>
+            <Text style={styles.heroTitle}>Restaurant Dashboard</Text>
 
-        <Text style={styles.detectedText}>Waiting for knocks...</Text>
-
-        <Text style={styles.subText}>
-          Custom knock orders with real-time mobile alerts.
-        </Text>
-
-        <View style={styles.statsRow}>
-          <View style={styles.smallStat}>
-            <Text style={styles.statValue}>{history.length}</Text>
-
-            <Text style={styles.statLabel}>Orders</Text>
+            <Text style={styles.heroSubtitle}>
+              Multi-table knock ordering system
+            </Text>
           </View>
 
-          <View style={styles.smallStat}>
-            <Text style={styles.statValue}>{connected ? "ON" : "OFF"}</Text>
-
-            <Text style={styles.statLabel}>BLE</Text>
+          <View style={styles.bellContainer}>
+            <Ionicons name="notifications" size={34} color={COLORS.green} />
           </View>
         </View>
-      </LinearGradient>
 
-      <Pressable style={styles.testButton} onPress={() => onKnockDetected(3)}>
-        <Text style={styles.testButtonText}>Simulate 3 knocks</Text>
-      </Pressable>
+        <View style={styles.heroStats}>
+          <View style={styles.heroStat}>
+            <Text style={styles.heroStatValue}>{connectedCount}</Text>
 
-      <Modal transparent visible={popupVisible} animationType="fade">
-        <View style={styles.overlay}>
+            <Text style={styles.heroStatLabel}>Connected</Text>
+          </View>
+
+          <View style={styles.heroDivider} />
+
+          <View style={styles.heroStat}>
+            <Text style={styles.heroStatValue}>{activeCount}</Text>
+
+            <Text style={styles.heroStatLabel}>Active</Text>
+          </View>
+        </View>
+      </View>
+
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.devicesContainer}>
+          {Object.entries(devices).length === 0 ? (
+            <View style={styles.emptyCard}>
+              <Ionicons name="bluetooth" size={42} color={COLORS.green} />
+
+              <Text style={styles.emptyTitle}>No devices connected</Text>
+
+              <Text style={styles.emptyText}>
+                Waiting for Knock2Drink BLE devices...
+              </Text>
+            </View>
+          ) : (
+            Object.entries(devices).map(([id, device]) => (
+              <View
+                key={id}
+                style={[
+                  styles.deviceCard,
+
+                  device.status === "SCANNING" && styles.deviceCardScanning,
+
+                  device.knocks >= 3 && styles.deviceCardAlert,
+                ]}
+              >
+                <View style={styles.deviceTop}>
+                  <View style={styles.deviceLeft}>
+                    <View style={styles.deviceIcon}>
+                      <Ionicons
+                        name="restaurant"
+                        size={20}
+                        color={COLORS.green}
+                      />
+                    </View>
+
+                    <View>
+                      <Text style={styles.deviceName}>{id}</Text>
+
+                      <Text style={styles.deviceMode}>{device.status}</Text>
+                    </View>
+                  </View>
+
+                  <View
+                    style={[
+                      styles.deviceStatusDot,
+                      {
+                        backgroundColor: device.connected
+                          ? COLORS.green
+                          : COLORS.red,
+                      },
+                    ]}
+                  />
+                </View>
+
+                <View style={styles.knockRow}>
+                  <Ionicons
+                    name="radio-button-on"
+                    size={18}
+                    color={COLORS.green}
+                  />
+
+                  <Text style={styles.deviceKnocks}>
+                    {device.knocks} knocks
+                  </Text>
+                </View>
+
+                {!!mappings[device.knocks] && (
+                  <View style={styles.orderBadgeGlow}>
+                    <View style={styles.orderBadge}>
+                      <Text style={styles.orderBadgeText}>
+                        {mappings[device.knocks]}
+                      </Text>
+                    </View>
+                  </View>
+                )}
+              </View>
+            ))
+          )}
+        </View>
+      </ScrollView>
+
+      <Modal visible={popupVisible} transparent animationType="fade">
+        <View style={styles.popupOverlay}>
           <View style={styles.popup}>
             <View style={styles.popupIcon}>
-              <Text style={styles.popupBell}>🔔</Text>
+              <Ionicons name="notifications" size={34} color={COLORS.green} />
             </View>
 
-            <Text style={styles.popupTitle}>
-              {currentKnocks} knocks detected
+            <Text style={styles.popupTitle}>Knock detected</Text>
+
+            <Text style={styles.popupDevice}>{currentDeviceId}</Text>
+
+            <Text style={styles.popupKnocks}>{currentKnocks} knocks</Text>
+
+            <Text style={styles.popupOrder}>
+              {mappings[currentKnocks] || "Unknown order"}
             </Text>
 
-            <Text style={styles.popupText}>
-              Order:{" "}
-              <Text style={styles.orderName}>
-                {mappings[currentKnocks] || "Unknown"}
-              </Text>
-            </Text>
-
-            <View style={styles.row}>
-              <Pressable style={styles.declineButton} onPress={closePopup}>
-                <Text style={styles.buttonText}>DECLINE</Text>
+            <View style={styles.popupButtons}>
+              <Pressable
+                style={[styles.popupButton, styles.rejectButton]}
+                onPress={() => setPopupVisible(false)}
+              >
+                <Text style={styles.popupButtonText}>Reject</Text>
               </Pressable>
 
               <Pressable
-                style={styles.acceptButton}
+                style={[styles.popupButton, styles.acceptButton]}
                 onPress={() => {
-                  addOrder(currentKnocks);
+                  addOrder(currentDeviceId, currentKnocks);
 
-                  closePopup();
+                  setPopupVisible(false);
                 }}
               >
-                <Text style={styles.buttonText}>ACCEPT</Text>
+                <Text style={styles.popupButtonText}>Accept</Text>
               </Pressable>
             </View>
           </View>
@@ -248,41 +318,42 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.bg,
-    paddingHorizontal: 20,
-    paddingTop: 76,
+    paddingTop: 72,
   },
 
   header: {
+    paddingHorizontal: 20,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 30,
   },
 
-  logo: {
+  headerTitle: {
     color: COLORS.text,
     fontSize: 34,
     fontWeight: "900",
   },
 
-  logoGreen: {
-    color: COLORS.green,
+  headerSubtitle: {
+    color: COLORS.subtext,
+    marginTop: 4,
+    fontSize: 15,
   },
 
   liveBadge: {
     flexDirection: "row",
     alignItems: "center",
     backgroundColor: COLORS.card,
-    borderRadius: 999,
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
     paddingVertical: 8,
+    borderRadius: 999,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
 
   liveDot: {
-    width: 9,
-    height: 9,
+    width: 10,
+    height: 10,
     borderRadius: 999,
     marginRight: 8,
   },
@@ -292,163 +363,282 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
-  mainCard: {
-    borderRadius: 30,
-    padding: 30,
-    alignItems: "center",
+  heroCard: {
+    marginTop: 24,
+    marginHorizontal: 20,
+    backgroundColor: COLORS.card,
+    borderRadius: 28,
+    padding: 24,
     borderWidth: 1,
     borderColor: COLORS.border,
     shadowColor: COLORS.green,
     shadowOpacity: 0.2,
-    shadowRadius: 20,
+    shadowRadius: 18,
     elevation: 10,
   },
 
-  iconCircle: {
-    width: 110,
-    height: 110,
-    borderRadius: 999,
-    backgroundColor: COLORS.glow,
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 24,
-  },
-
-  bell: {
-    fontSize: 46,
-  },
-
-  detectedText: {
-    color: COLORS.text,
-    fontSize: 25,
-    fontWeight: "800",
-    textAlign: "center",
-  },
-
-  subText: {
-    color: COLORS.subtext,
-    textAlign: "center",
-    marginTop: 10,
-    fontSize: 15,
-    lineHeight: 22,
-  },
-
-  statsRow: {
+  heroTop: {
     flexDirection: "row",
-    marginTop: 28,
-    gap: 14,
-  },
-
-  smallStat: {
-    backgroundColor: "#111",
-    borderRadius: 18,
-    paddingVertical: 14,
-    paddingHorizontal: 24,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    justifyContent: "space-between",
     alignItems: "center",
   },
 
-  statValue: {
-    color: COLORS.green,
-    fontSize: 24,
+  heroTitle: {
+    color: COLORS.text,
+    fontSize: 28,
     fontWeight: "900",
   },
 
-  statLabel: {
+  heroSubtitle: {
+    color: COLORS.subtext,
+    marginTop: 8,
+    fontSize: 15,
+  },
+
+  bellContainer: {
+    width: 72,
+    height: 72,
+    borderRadius: 999,
+    backgroundColor: COLORS.glow,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  heroStats: {
+    flexDirection: "row",
+    marginTop: 28,
+    alignItems: "center",
+  },
+
+  heroStat: {
+    flex: 1,
+  },
+
+  heroStatValue: {
+    color: COLORS.green,
+    fontSize: 30,
+    fontWeight: "900",
+  },
+
+  heroStatLabel: {
     color: COLORS.subtext,
     marginTop: 4,
   },
 
-  testButton: {
-    marginTop: 28,
-    backgroundColor: COLORS.green,
-    borderRadius: 18,
-    paddingVertical: 16,
+  heroDivider: {
+    width: 1,
+    height: 46,
+    backgroundColor: COLORS.border,
+  },
+
+  scroll: {
+    flex: 1,
+    marginTop: 20,
+  },
+
+  scrollContent: {
+    paddingHorizontal: 20,
+    paddingBottom: 120,
+  },
+
+  devicesContainer: {
+    gap: 14,
+  },
+
+  deviceCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 22,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+
+  deviceCardScanning: {
+    borderColor: COLORS.green,
+  },
+
+  deviceCardAlert: {
+    shadowColor: COLORS.green,
+    shadowOpacity: 0.25,
+    shadowRadius: 16,
+    elevation: 10,
+  },
+
+  deviceTop: {
+    flexDirection: "row",
+    justifyContent: "space-between",
     alignItems: "center",
   },
 
-  testButtonText: {
-    color: COLORS.text,
-    fontWeight: "800",
-    fontSize: 17,
+  deviceLeft: {
+    flexDirection: "row",
+    alignItems: "center",
   },
 
-  overlay: {
+  deviceIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 999,
+    backgroundColor: COLORS.glow,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 14,
+  },
+
+  deviceName: {
+    color: COLORS.text,
+    fontSize: 20,
+    fontWeight: "800",
+  },
+
+  deviceMode: {
+    color: COLORS.subtext,
+    marginTop: 4,
+  },
+
+  deviceStatusDot: {
+    width: 12,
+    height: 12,
+    borderRadius: 999,
+  },
+
+  knockRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 14,
+  },
+
+  deviceKnocks: {
+    color: COLORS.green,
+    marginLeft: 8,
+    fontWeight: "800",
+    fontSize: 18,
+  },
+
+  orderBadgeGlow: {
+    alignSelf: "flex-start",
+    marginTop: 14,
+    shadowColor: COLORS.green,
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 6,
+  },
+
+  orderBadge: {
+    backgroundColor: COLORS.glow,
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+  },
+
+  orderBadgeText: {
+    color: COLORS.green,
+    fontWeight: "800",
+  },
+
+  emptyCard: {
+    backgroundColor: COLORS.card,
+    borderRadius: 24,
+    padding: 32,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+
+  emptyTitle: {
+    color: COLORS.text,
+    fontSize: 22,
+    fontWeight: "800",
+    marginTop: 16,
+  },
+
+  emptyText: {
+    color: COLORS.subtext,
+    textAlign: "center",
+    marginTop: 10,
+  },
+
+  popupOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.82)",
+    backgroundColor: "rgba(0,0,0,0.75)",
     justifyContent: "center",
     alignItems: "center",
+    paddingHorizontal: 20,
   },
 
   popup: {
-    width: 340,
+    width: "100%",
     backgroundColor: COLORS.card,
-    borderRadius: 30,
-    padding: 28,
+    borderRadius: 28,
+    padding: 26,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
 
   popupIcon: {
-    alignSelf: "center",
-    backgroundColor: COLORS.glow,
     width: 76,
     height: 76,
     borderRadius: 999,
+    backgroundColor: COLORS.glow,
+    alignSelf: "center",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 18,
-  },
-
-  popupBell: {
-    fontSize: 34,
   },
 
   popupTitle: {
     color: COLORS.text,
-    fontSize: 27,
+    fontSize: 28,
     fontWeight: "900",
     textAlign: "center",
-    marginBottom: 12,
+    marginTop: 18,
   },
 
-  popupText: {
+  popupDevice: {
+    color: COLORS.green,
+    textAlign: "center",
+    marginTop: 8,
+    fontWeight: "700",
+  },
+
+  popupKnocks: {
+    color: COLORS.text,
+    fontSize: 46,
+    fontWeight: "900",
+    textAlign: "center",
+    marginTop: 18,
+  },
+
+  popupOrder: {
     color: COLORS.subtext,
     textAlign: "center",
-    fontSize: 20,
-    marginBottom: 28,
+    marginTop: 10,
+    fontSize: 18,
   },
 
-  orderName: {
-    color: COLORS.green,
-    fontWeight: "900",
-  },
-
-  row: {
+  popupButtons: {
     flexDirection: "row",
+    marginTop: 28,
     gap: 12,
   },
 
-  declineButton: {
+  popupButton: {
     flex: 1,
-    backgroundColor: COLORS.red,
-    borderRadius: 16,
     paddingVertical: 16,
+    borderRadius: 18,
     alignItems: "center",
+  },
+
+  rejectButton: {
+    backgroundColor: "#2a1212",
   },
 
   acceptButton: {
-    flex: 1,
     backgroundColor: COLORS.green,
-    borderRadius: 16,
-    paddingVertical: 16,
-    alignItems: "center",
   },
 
-  buttonText: {
+  popupButtonText: {
     color: COLORS.text,
-    fontWeight: "900",
-    fontSize: 15,
+    fontWeight: "800",
+    fontSize: 16,
   },
 });

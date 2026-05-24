@@ -31,7 +31,9 @@ export default function HistoryScreen() {
 
               <View>
                 <Text style={styles.item}>{item.item}</Text>
-                <Text style={styles.meta}>{item.knocks} knocks</Text>
+                <Text style={styles.meta}>
+                  {item.knocks} knocks • {item.deviceId}
+                </Text>
               </View>
             </View>
 
