@@ -1,23 +1,22 @@
 #include <ArduinoBLE.h>
+
 #include <Knock_me_out_inferencing.h>
+
 #include "LSM6DS3.h"
+
 #include <Wire.h>
 
 /* ================= BLE ================= */
 
 #define DEVICE_ID "T1"
 
-String device_name = String("Knock2Drink_") + DEVICE_ID;
-
 BLEService knockService(
-  "12345678-1234-1234-1234-1234567890ab"
-);
+  "12345678-1234-1234-1234-1234567890ab");
 
-BLEStringCharacteristic knockCharacteristic(
+BLECharacteristic knockCharacteristic(
   "abcdefab-1234-5678-1234-abcdefabcdef",
-  BLERead | BLENotify,
-  20
-);
+  BLENotify,
+  20);
 
 /* ================= LED ================= */
 
@@ -26,21 +25,23 @@ BLEStringCharacteristic knockCharacteristic(
 #define LED_BLUE LEDB
 
 enum LightMode {
-  LIGHT_OFF,
   LIGHT_RED,
   LIGHT_GREEN,
   LIGHT_BLUE,
   LIGHT_YELLOW,
   LIGHT_MAGENTA,
-  LIGHT_WHITE
+  LIGHT_WHITE,
+  LIGHT_OFF
 };
 
 void set_light(LightMode mode) {
+
   bool r = LOW;
   bool g = LOW;
   bool b = LOW;
 
   switch (mode) {
+
     case LIGHT_RED:
       r = HIGH;
       break;
@@ -82,17 +83,14 @@ void set_light(LightMode mode) {
 
 LSM6DS3 imu(I2C_MODE, 0x6A);
 
-/* ================= TIMING ================= */
+/* ================= CONFIG ================= */
 
-#define SAMPLE_RATE_HZ 100
-#define SAMPLE_INTERVAL_US (1000000 / SAMPLE_RATE_HZ)
-
+#define CONFIDENCE_THRESHOLD 0.90f
 #define SCAN_DURATION_MS 15000
 #define KNOCK_TIMEOUT_MS 1500
 #define DEBOUNCE_MS 150
-
-#define CONFIDENCE_THRESHOLD 0.90f
-#define MIN_VALID_KNOCKS 3
+#define MAX_KNOCKS 6
+#define TARGET_KNOCKS 3
 
 /* ================= STATE ================= */
 
@@ -102,122 +100,58 @@ enum Mode {
 };
 
 Mode current_mode = MODE_SLEEP;
-
 unsigned long scan_start_time = 0;
 unsigned long last_knock_time = 0;
 unsigned long last_detection_time = 0;
-
 int knock_count = 0;
 
 /* ================= EI ================= */
 
 static float features[EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE];
-
 static size_t feature_ix = 0;
 
-static bool inference_ready = false;
+/* ================= BLE SEND ================= */
 
-/* ================= BLE QUEUE ================= */
+void send_ble(const char *msg) {
 
-String pending_ble_message = "";
+  Serial.print("BLE TX -> ");
+  Serial.println(msg);
 
-bool ble_message_pending = false;
+  bool success = knockCharacteristic.writeValue(
+    (const uint8_t *)msg,
+    strlen(msg)
+  );
 
-void queue_ble(const String &msg) {
-  pending_ble_message = msg;
-
-  ble_message_pending = true;
-}
-
-void process_ble_queue() {
-  if (!ble_message_pending) {
-    return;
+  if (!success) {
+    Serial.println("BLE SEND FAILED");
   }
-
-  knockCharacteristic.writeValue(pending_ble_message);
-
-  ble_message_pending = false;
 }
-
 /* ================= MOTION ================= */
 
 bool simple_motion_detect(
   float x,
   float y,
-  float z
-) {
-  static float prev_mag = 0.0f;
+  float z) {
 
+  static float prev_mag = 0;
   float mag = sqrt(x * x + y * y + z * z);
-
   float delta = abs(mag - prev_mag);
 
   prev_mag = mag;
 
-  return delta > 20.0f;
-}
-
-/* ================= SAMPLE COLLECTION ================= */
-
-void update_sampling() {
-  static uint32_t last_sample_us = 0;
-
-  uint32_t now = micros();
-
-  if ((now - last_sample_us) < SAMPLE_INTERVAL_US) {
-    return;
-  }
-
-  last_sample_us += SAMPLE_INTERVAL_US;
-
-  float gx = imu.readFloatGyroX();
-  float gy = imu.readFloatGyroY();
-  float gz = imu.readFloatGyroZ();
-
-  if (current_mode == MODE_SLEEP) {
-    if (simple_motion_detect(gx, gy, gz)) {
-      current_mode = MODE_SCANNING;
-
-      scan_start_time = millis();
-
-      knock_count = 0;
-
-      set_light(LIGHT_YELLOW);
-
-      queue_ble(
-        String(DEVICE_ID) + "|S"
-      );
-
-      Serial.println("SCAN START");
-    }
-
-    return;
-  }
-
-  features[feature_ix++] = gx;
-  features[feature_ix++] = gy;
-  features[feature_ix++] = gz;
-
-  if (
-    feature_ix >=
-    EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE
-  ) {
-    feature_ix = 0;
-
-    inference_ready = true;
-  }
+  return (delta > 0.3f);
 }
 
 /* ================= INFERENCE ================= */
 
 bool run_inference_fast() {
+
   signal_t signal;
 
   int err = numpy::signal_from_buffer(
     features,
     EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE,
-    &signal
-  );
+    &signal);
 
   if (err != 0) {
     return false;
@@ -228,8 +162,7 @@ bool run_inference_fast() {
   err = run_classifier(
     &signal,
     &result,
-    false
-  );
+    false);
 
   if (err != EI_IMPULSE_OK) {
     return false;
@@ -238,102 +171,134 @@ bool run_inference_fast() {
   for (
     size_t i = 0;
     i < EI_CLASSIFIER_LABEL_COUNT;
-    i++
-  ) {
+    i++) {
+
     if (
       strcmp(
         result.classification[i].label,
-        "knock"
-      ) == 0 &&
-      result.classification[i].value >=
-        CONFIDENCE_THRESHOLD
-    ) {
-      return true;
+        "knock")
+      == 0) {
+
+      return (
+        result.classification[i].value > CONFIDENCE_THRESHOLD);
     }
   }
 
   return false;
 }
 
-/* ================= KNOCK HANDLER ================= */
+/* ================= KNOCK HANDLING ================= */
 
 void handle_knock(bool detected) {
+
   unsigned long now = millis();
+
+  /* ================= NEW KNOCK ================= */
 
   if (
     detected &&
-    (now - last_detection_time >
-     DEBOUNCE_MS)
+    (now - last_detection_time > DEBOUNCE_MS)
   ) {
+
     last_detection_time = now;
+
+    /* ---- continue sequence ---- */
 
     if (
       now - last_knock_time <
       KNOCK_TIMEOUT_MS
     ) {
+
       knock_count++;
+
     } else {
+
+      /* ---- new sequence ---- */
+
       knock_count = 1;
     }
 
     last_knock_time = now;
 
-    Serial.print("KNOCK ");
-    Serial.println(knock_count);
-
     set_light(LIGHT_MAGENTA);
 
-    if (knock_count >= MIN_VALID_KNOCKS) {
-      queue_ble(
-        String(DEVICE_ID) +
-        "|K:" +
-        String(knock_count)
-      );
+    Serial.print("KNOCK COUNT -> ");
+    Serial.println(knock_count);
+
+    /* ---- max knocks protection ---- */
+
+    if (knock_count > MAX_KNOCKS) {
+
+      Serial.println("TOO MANY KNOCKS");
+
+      knock_count = 0;
+
+      current_mode = MODE_SLEEP;
+
+      set_light(LIGHT_RED);
+
+      send_ble("ERR");
+
+      return;
     }
   }
 
+  /* ================= SEQUENCE FINISHED ================= */
+
   if (
-    knock_count >= MIN_VALID_KNOCKS &&
+    knock_count >= TARGET_KNOCKS &&
+    knock_count <= MAX_KNOCKS &&
     (now - last_knock_time >
      KNOCK_TIMEOUT_MS)
   ) {
-    queue_ble(
-      String(DEVICE_ID) +
-      "|PATTERN_OK:" +
-      String(knock_count)
+
+    char msg[20];
+
+    snprintf(
+      msg,
+      sizeof(msg),
+      "%s|OK:%d",
+      DEVICE_ID,
+      knock_count
     );
 
-    Serial.println("PATTERN OK");
+    Serial.print("FINAL -> ");
+    Serial.println(msg);
+
+    send_ble(msg);
 
     knock_count = 0;
 
     current_mode = MODE_SLEEP;
 
-    set_light(LIGHT_WHITE);
+    set_light(LIGHT_GREEN);
   }
+
+  /* ================= SCAN TIMEOUT ================= */
 
   if (
     current_mode == MODE_SCANNING &&
     (now - scan_start_time >
      SCAN_DURATION_MS)
   ) {
+
+    Serial.println("SCAN TIMEOUT");
+
     current_mode = MODE_SLEEP;
 
     knock_count = 0;
 
-    queue_ble(
-      String(DEVICE_ID) + "|Q"
-    );
+    send_ble("Q");
 
-    Serial.println("SCAN STOP");
-
-    set_light(LIGHT_GREEN);
+    set_light(LIGHT_BLUE);
   }
 }
+
 
 /* ================= SETUP ================= */
 
 void setup() {
+
   Serial.begin(115200);
 
   pinMode(LED_RED, OUTPUT);
@@ -345,6 +310,7 @@ void setup() {
   Wire.begin();
 
   if (imu.begin() != 0) {
+
     set_light(LIGHT_RED);
 
     while (1)
@@ -352,29 +318,23 @@ void setup() {
   }
 
   if (!BLE.begin()) {
+
     set_light(LIGHT_RED);
 
     while (1)
       ;
   }
 
-  BLE.setLocalName(
-    device_name.c_str()
-  );
+  BLE.setLocalName("Knock2Drink");
 
-  BLE.setAdvertisedService(
-    knockService
-  );
+  BLE.setAdvertisedService(knockService);
 
   knockService.addCharacteristic(
-    knockCharacteristic
-  );
+    knockCharacteristic);
 
   BLE.addService(knockService);
 
   BLE.advertise();
-
-  Serial.println("READY");
 
   set_light(LIGHT_GREEN);
 }
@@ -382,42 +342,45 @@ void setup() {
 /* ================= LOOP ================= */
 
 void loop() {
+
   BLE.poll();
 
-  process_ble_queue();
+  float x = imu.readFloatGyroX();
+  float y = imu.readFloatGyroY();
+  float z = imu.readFloatGyroZ();
+  if (current_mode == MODE_SLEEP) {
 
-  BLEDevice central = BLE.central();
+    if (
+      simple_motion_detect(x, y, z)) {
 
-  if (!central) {
+      current_mode = MODE_SCANNING;
+
+      scan_start_time = millis();
+
+      knock_count = 0;
+
+      feature_ix = 0;
+
+      send_ble("S");
+
+      set_light(LIGHT_YELLOW);
+    }
+
     return;
   }
 
-  while (central.connected()) {
-    BLE.poll();
+  features[feature_ix++] = x;
+  features[feature_ix++] = y;
+  features[feature_ix++] = z;
 
-    process_ble_queue();
+  if (
+    feature_ix >= EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE) {
 
-    update_sampling();
+    feature_ix = 0;
 
-    if (inference_ready) {
-      inference_ready = false;
+    bool knock =
+      run_inference_fast();
 
-      bool knock =
-        run_inference_fast();
-
-      handle_knock(knock);
-    }
+    handle_knock(knock);
   }
-
-  current_mode = MODE_SLEEP;
-
-  knock_count = 0;
-
-  feature_ix = 0;
-
-  inference_ready = false;
-
-  set_light(LIGHT_BLUE);
-
-  Serial.println("DISCONNECTED");
 }
